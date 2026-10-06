@@ -1,0 +1,219 @@
+#!/bin/bash
+
+outside_pattern='·'
+case ${1:-} in
+'' | --dots)
+  outside_pattern='·'
+  (($#)) && shift
+  ;;
+--slashes)
+  outside_pattern='╱'
+  shift
+  ;;
+*)
+  printf 'Wrong option: %s\nUsage: fet [--dots|--slashes]\n' "$1" >&2
+  exit 1
+  ;;
+esac
+
+clear
+
+c=3 b=4
+for j in c b; do
+  for i in {0..7}; do
+    printf -v $j$i "%b" "\e[${!j}${i}m"
+  done
+done
+
+user=$(whoami)
+host=$(uname -a | awk '{print $2}')
+memory=$(free -h) os=$(source /etc/os-release && echo $PRETTY_NAME) kernel=$(uname -sr)
+wm="$(xprop -id $(xprop -root -notype | awk '$1=="_NET_SUPPORTING_WM_CHECK:"{print $5}') -notype -f _NET_WM_NAME 8t | grep "WM_NAME" | cut -f2 -d \")"
+mem=$(free -m | sed -n 's/^Mem:\s\+[0-9]\+\s\+\([0-9]\+\)\s.\+/\1/p')
+mem_total=$(free -m | awk '/^Mem:/ {print $2}')
+mem_display="${mem} / ${mem_total}MiB"
+pkgs="$(pacman -Q | wc -l)"
+shell=$(echo "$SHELL" | awk -F/ '{for ( i=1; i <= NF; i++) sub(".", substr(toupper($i),1,1) , $i); print $NF}')
+colors=''
+for i in {0..7}; do
+  ((i > 0)) && colors+=' '
+  colors+="$(printf '\e[%sm▄▄▄' "${1}$((30 + i))")"
+done
+
+display_width() {
+  # Strip terminal colour sequences before measuring rendered columns.
+  printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g' | wc -L
+}
+
+repeat() {
+  local count=$1 char=$2 output
+  printf -v output '%*s' "$count" ''
+  printf '%s' "${output// /$char}"
+}
+
+print_cell() {
+  local content=$1 width=$2 content_width padding
+  content_width=$(display_width "$content")
+  padding=$((width - content_width))
+  printf '%s%*s' "$content" "$padding" ''
+}
+
+print_centered_cell() {
+  local content=$1 width=$2 content_width padding left right
+  content_width=$(display_width "$content")
+  padding=$((width - content_width))
+  left=$((padding / 2))
+  right=$((padding - left))
+  printf '%*s%s%*s' "$left" '' "$content" "$right" ''
+}
+
+get_uptime() {
+  IFS=. read -r s _ </proc/uptime
+  d=$((s / 60 / 60 / 24))
+  h=$((s / 60 / 60 % 24))
+  m=$((s / 60 % 60))
+
+  case "$d" in [!0]*) uptime="${uptime}${d}d " ;; esac
+  case "$h" in [!0]*) uptime="${uptime}${h}h " ;; esac
+  uptime="${uptime}${m}m"
+  printf '%s' "$uptime"
+}
+
+init=$(readlink /sbin/init)
+init=${init##*/}
+init=${init%%-*}
+
+left_rows=(
+  "                   ${c2} ${c0} ${c3} ${c0}${c1}   ${c4}"
+  "        █           █       "
+  "       ${c4}█▀▀▀▀▀▀▀▀▀▀▀▀▀█${c4}      "
+  "       ${c4}█             █${c4}      "
+  "       ${c4}█   █     █   █${c4}      "
+  "       █             █      "
+  "       ▀█▄▄▄▄▄▄▄▄▄▄▄█▀      "
+  "         ▄▄▄▄   ▄▄▄▄        "
+  "                           "
+  "${c4}         ARCH${c1} - ${c4}HDH   ${c4}"
+)
+
+right_rows=(
+  " ${c1}${c4}${c1} ${c4}$user@${c1}$host ${c0}"
+  " ${c4}  OS     ${c7} $os ${c0}"
+  " ${c4}󰀘  Kernel ${c7} $kernel ${c0}"
+  " ${c4}  WM     ${c7} $wm ${c0}"
+  " ${c4}󰒙  Shell  ${c7} $shell ${c0}"
+  " ${c4}⚡ Init   ${c7} $init ${c0}"
+  " ${c4}󰏖  Pkgs   ${c7} $pkgs ${c0}"
+  " ${c4}  Uptime ${c7} $(get_uptime) ${c0}"
+  " ${c4}  Mem    ${c7} $mem_display ${c0}"
+  "$colors${c0}"
+)
+
+lw=0 rw=0
+for row in "${left_rows[@]}"; do
+  width=$(display_width "$row")
+  ((width > lw)) && lw=$width
+done
+for row in "${right_rows[@]}"; do
+  width=$(display_width "$row")
+  ((width > rw)) && rw=$width
+done
+
+ldashes=$(repeat "$lw" '─')
+rdashes=$(repeat "$rw" '─')
+
+# Striped top and bottom panels inspired by the Crush header.
+pattern_width=$((lw + rw + 1))
+full_dashes=$(repeat "$pattern_width" '─')
+frame_pattern=''
+for ((i = 0; i < pattern_width; i++)); do
+  if ((i == 0 || i == pattern_width - 1)); then
+    frame_pattern+=' '
+  else
+    frame_pattern+="${c1}╱"
+  fi
+done
+frame_pattern+="$c4"
+
+terminal_width=$(tput cols 2>/dev/null || printf '%s' "$((pattern_width + 3))")
+[[ $terminal_width =~ ^[0-9]+$ ]] || terminal_width=$((pattern_width + 3))
+pattern_line=0
+
+print_side_pattern() {
+  local width=$1 i
+  for ((i = 0; i < width; i++)); do
+    printf '%s%s' "$c0" "$outside_pattern"
+  done
+  printf '%s' "$c4"
+}
+
+print_centered_line() {
+  local content=$1 content_width empty left right right_frame_gap=1
+  content_width=$(display_width "$content")
+  empty=$((terminal_width - 1 - content_width - right_frame_gap))
+
+  if ((empty <= 0)); then
+    printf '%s\n' "$content"
+    return
+  fi
+
+  left=$((empty / 2))
+  right=$((empty - left))
+  print_side_pattern "$left" "$pattern_line"
+  printf '%s' "$content"
+  printf '%*s' "$right_frame_gap" ''
+  print_side_pattern "$right" "$((pattern_line + left))"
+  printf '\n'
+  ((pattern_line++))
+}
+
+print_side_pattern "$((terminal_width - 1))" 0
+printf '\n'
+line=$(printf '%s ┌%s┐' "$c4" "$full_dashes")
+print_centered_line "$line"
+line=$({
+  printf '%s │' "$c4"
+  print_cell "$frame_pattern" "$pattern_width"
+  printf '%s│' "$c4"
+})
+print_centered_line "$line"
+line=$(printf '%s ├%s┬%s┤' "$c4" "$ldashes" "$rdashes")
+print_centered_line "$line"
+line=$({
+  printf '%s │' "$c4"
+  print_cell "${left_rows[0]}" "$lw"
+  printf '│'
+  print_cell "${right_rows[0]}" "$rw"
+  printf '%s│' "$c4"
+})
+print_centered_line "$line"
+line=$(printf '%s ├%s┼%s┤' "$c4" "$ldashes" "$rdashes")
+print_centered_line "$line"
+
+for ((i = 1; i < ${#left_rows[@]}; i++)); do
+  line=$({
+    printf '%s │' "$c4"
+    print_cell "${left_rows[i]}" "$lw"
+    printf '│'
+    if ((i == ${#right_rows[@]} - 1)); then
+      print_centered_cell "${right_rows[i]}" "$rw"
+    else
+      print_cell "${right_rows[i]}" "$rw"
+    fi
+    printf '%s│' "$c4"
+  })
+  print_centered_line "$line"
+done
+
+line=$(printf '%s ├%s┴%s┤' "$c4" "$ldashes" "$rdashes")
+print_centered_line "$line"
+line=$({
+  printf '%s │' "$c4"
+  print_cell "$frame_pattern" "$pattern_width"
+  printf '%s│' "$c4"
+})
+print_centered_line "$line"
+line=$(printf '%s └%s┘' "$c4" "$full_dashes")
+print_centered_line "$line"
+print_side_pattern "$((terminal_width - 1))" 0
+printf '\n\n'
